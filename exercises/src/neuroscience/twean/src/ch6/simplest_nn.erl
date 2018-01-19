@@ -4,27 +4,28 @@
 %%% @doc
 %%%
 %%% @end
-%%% Created : 16. Jan 2018 10:20 PM
+%%% Created : 17. Jan 2018 9:14 PM
 %%%-------------------------------------------------------------------
--module(simple_neuron).
+-module(simplest_nn).
 -author("rahulsinha").
 
 -behaviour(gen_server).
--define(NAME,neuron).
-%% API
--export([create/0,send/1]).
 
+%% API
+-compile(export_all).
+create() ->
+  Weights = [random:uniform()-0.5,random:uniform()-0.5,random:uniform()-0.5],
+  {ok,N_PId} = gen_server:start_link({local, neuron}, ?MODULE, [neuron,Weights,undefined,undefined], []),
+  {ok,S_PId} = gen_server:start_link({local, sensor}, ?MODULE, [sensor,N_PId], []),
+  {ok,A_PId} = gen_server:start_link({local, actuator}, ?MODULE, [actuator,N_PId], []),
+  gen_server:call(neuron,{init,S_PId,A_PId}),
+  gen_server:start_link({local, cortex}, ?MODULE, [cortex,N_PId,S_PId,A_PId], []).
 %% gen_server callbacks
--export([init/1,
-  handle_call/3,
-  handle_cast/2,
-  handle_info/2,
-  terminate/2,
-  code_change/3]).
+
 
 -define(SERVER, ?MODULE).
 
--record(state, {weights=[]}).
+-record(state, {}).
 
 %%%===================================================================
 %%% API
@@ -36,15 +37,11 @@
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec(create() ->
+-spec(start_link() ->
   {ok, Pid :: pid()} | ignore | {error, Reason :: term()}).
-create() ->
-  Weights = [random:uniform()-0.5,random:uniform()-0.5,random:uniform()-0.5],
-  {ok,Pid} = gen_server:start_link({local, neuron}, ?MODULE, [Weights], []).
+start_link() ->
+  gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
-send(Input) ->
-  Reply = gen_server:call(?NAME,Input),
-  Reply.
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
@@ -60,12 +57,17 @@ send(Input) ->
 %%                     {stop, Reason}
 %% @end
 %%--------------------------------------------------------------------
--spec(init(Weights :: term()) ->
+-spec(init(Args :: term()) ->
   {ok, State :: #state{}} | {ok, State :: #state{}, timeout() | hibernate} |
   {stop, Reason :: term()} | ignore).
-init(Weights) ->
-  {ok, Weights}.
-
+init([cortex,N_PId,S_PId,A_PId]) ->
+  {ok,[cortex,N_PId,S_PId,A_PId]};
+init([neuron,Weights,undefined,undefined]) ->
+  {ok, [neuron,Weights,undefined,undefined]};
+init([sensor,N_PId]) ->
+  {ok,[sensor,N_PId]};
+init([actuator,N_PId]) ->
+  {ok,[actuator,N_PId]}.
 %%--------------------------------------------------------------------
 %% @private
 %% @doc
@@ -81,11 +83,82 @@ init(Weights) ->
   {noreply, NewState :: #state{}, timeout() | hibernate} |
   {stop, Reason :: term(), Reply :: term(), NewState :: #state{}} |
   {stop, Reason :: term(), NewState :: #state{}}).
-handle_call(Input,From, Weights) ->
-  io:format("****Processing****~n Input:~p~n Using Weights:~p~n",[Input,Weights]),
-  Dot_Product = dot(Input,Weights,0),
-  Output = [math:tanh(Dot_Product)],
-  {reply, Output, Weights}.
+
+handle_call(R,F,[sensor,N_PId]) ->
+  case R of
+    sync ->
+      io:format("Sensor received sync signal,"),
+      Sensory_Signal = [random:uniform(),random:uniform()],
+      io:format("****Sensing****:~n Signal from the environment
+      ~p~n",[Sensory_Signal]),
+      gen_server:call(neuron,{self(),forward,Sensory_Signal}),
+      {reply,ok,[sensor,N_PId]}
+  end;
+
+handle_call(R,F,[neuron,Weights,undefined,undefined]) ->
+   io:format("~nneuron handle call~n"),
+   case R of
+     {init,S_PId,A_PId} ->
+       {reply,done,[neuron,Weights,S_PId,A_PId]};
+
+     _ -> {reply,Weights}
+   end;
+handle_call(R,F,[neuron,Weights,S_PId,A_PId]) ->
+  io:format("~nneuron handle call S_Pid ~p ~n ~p~n",[S_PId,Weights]),
+  case R of
+    {S_PId, forward, Input} ->
+      io:format("~nneuron received forward message~n"),
+      Dot_Product = dot(Input,Weights,0),
+      Output = [math:tanh(Dot_Product)],
+      gen_server:call(actuator,{self(),forward,Output}),
+      {reply,ok,[neuron,Weights,S_PId,A_PId]};
+
+    stop ->
+      io:format("~nneuron stopping~n"),
+      {stop,stopped_by_cortex,[]}
+  end;
+
+
+handle_call(R,F,[actuator,N_PId]) ->
+  case R of
+    stop ->
+      io:format("~nactuator stopping~n"),
+      {stop,stop,[]};
+    _ ->
+      io:format("~nIn actuator ~p ~n",[R]),
+      {reply,ok, [actuator,N_PId]}
+  end;
+
+
+handle_call(R,F,[cortex,N_PId,S_PId,A_PId]) ->
+  io:format("~ncortex handle call~n "),
+  case R of
+    sense_think_act ->
+      gen_server:call(S_PId,sync),
+      {reply,ok,[cortex,N_PId,S_PId,A_PId]};
+    stop ->gen_server:stop(neuron),
+           gen_server:stop(actuator),
+           gen_server:stop(sensor),
+           io:format("shutting down"),
+           {stop,stopping,[]}
+  end;
+
+
+handle_call(R,F,[sensor,N_PId]) ->
+  case R of
+    stop ->
+       io:format("~nsensor stopping~n"),
+       {stop,stopped_by_cortex,[]};
+
+    _ ->
+     io:format("~nsensor handle call~n "),
+     {reply,ok,[sensor,N_PId]}
+  end;
+
+handle_call(_Request, _From, State) ->
+  io:format("~ngeneral handle call~n"),
+  {reply, ok, State}.
+
 
 %%--------------------------------------------------------------------
 %% @private
@@ -151,11 +224,6 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-%The spawned neuron process accepts an input vector,
-% prints it and the weight vector to the screen,
-% calculates the output, and then sends the output to the contacting process.
-% The output is also a vector of length one.
-
 dot([I|Input],[W|Weights],Acc) ->
   io:format("In dot I=~p,W=~p",[I,W]),
   dot(Input,Weights,I*W + Acc);
