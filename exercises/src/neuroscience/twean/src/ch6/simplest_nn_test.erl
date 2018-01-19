@@ -15,3 +15,8 @@ simple_test() ->
   simplest_nn:create(),
   gen_server:call(cortex,sense_think_act),
   ?assert(true).
+sup_test() ->
+  simplest_nn_sup:start_link(),
+  gen_server:call(cortex,sense_think_act),
+  gen_server:cast(sensor,stop),
+  gen_server:call(cortex,sense_think_act).

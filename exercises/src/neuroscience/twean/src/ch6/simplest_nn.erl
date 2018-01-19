@@ -13,14 +13,13 @@
 
 %% API
 -compile(export_all).
-create() ->
-  Weights = [random:uniform()-0.5,random:uniform()-0.5,random:uniform()-0.5],
-  {ok,N_PId} = gen_server:start_link({local, neuron}, ?MODULE, [neuron,Weights,undefined,undefined], []),
-  {ok,S_PId} = gen_server:start_link({local, sensor}, ?MODULE, [sensor,N_PId], []),
-  {ok,A_PId} = gen_server:start_link({local, actuator}, ?MODULE, [actuator,N_PId], []),
-  gen_server:call(neuron,{init,S_PId,A_PId}),
-  gen_server:start_link({local, cortex}, ?MODULE, [cortex,N_PId,S_PId,A_PId], []).
-%% gen_server callbacks
+
+create(Name,W) ->
+  io:format("~nStarting ~p~n",[Name]),
+  %% To know when the parent shuts down
+  process_flag(trap_exit, true),
+  {ok,N_PId} = gen_server:start_link({local, Name}, ?MODULE, [Name,W], []).
+  %% gen_server callbacks
 
 
 -define(SERVER, ?MODULE).
@@ -60,14 +59,14 @@ start_link() ->
 -spec(init(Args :: term()) ->
   {ok, State :: #state{}} | {ok, State :: #state{}, timeout() | hibernate} |
   {stop, Reason :: term()} | ignore).
-init([cortex,N_PId,S_PId,A_PId]) ->
-  {ok,[cortex,N_PId,S_PId,A_PId]};
-init([neuron,Weights,undefined,undefined]) ->
-  {ok, [neuron,Weights,undefined,undefined]};
-init([sensor,N_PId]) ->
-  {ok,[sensor,N_PId]};
-init([actuator,N_PId]) ->
-  {ok,[actuator,N_PId]}.
+init([cortex,W]) ->
+  {ok,[cortex]};
+init([neuron,W]) ->
+  {ok, [neuron,W]};
+init([sensor,W]) ->
+  {ok,[sensor]};
+init([actuator,W]) ->
+  {ok,[actuator]}.
 %%--------------------------------------------------------------------
 %% @private
 %% @doc
@@ -84,7 +83,7 @@ init([actuator,N_PId]) ->
   {stop, Reason :: term(), Reply :: term(), NewState :: #state{}} |
   {stop, Reason :: term(), NewState :: #state{}}).
 
-handle_call(R,F,[sensor,N_PId]) ->
+handle_call(R,F,[sensor]) ->
   case R of
     sync ->
       io:format("Sensor received sync signal,"),
@@ -92,26 +91,18 @@ handle_call(R,F,[sensor,N_PId]) ->
       io:format("****Sensing****:~n Signal from the environment
       ~p~n",[Sensory_Signal]),
       gen_server:call(neuron,{self(),forward,Sensory_Signal}),
-      {reply,ok,[sensor,N_PId]}
+      {reply,ok,[sensor]}
   end;
 
-handle_call(R,F,[neuron,Weights,undefined,undefined]) ->
-   io:format("~nneuron handle call~n"),
-   case R of
-     {init,S_PId,A_PId} ->
-       {reply,done,[neuron,Weights,S_PId,A_PId]};
-
-     _ -> {reply,Weights}
-   end;
-handle_call(R,F,[neuron,Weights,S_PId,A_PId]) ->
-  io:format("~nneuron handle call S_Pid ~p ~n ~p~n",[S_PId,Weights]),
+handle_call(R,F,[neuron,Weights]) ->
+  io:format("~nneuron handle call  ~p ~n~n",[Weights]),
   case R of
     {S_PId, forward, Input} ->
       io:format("~nneuron received forward message~n"),
       Dot_Product = dot(Input,Weights,0),
       Output = [math:tanh(Dot_Product)],
       gen_server:call(actuator,{self(),forward,Output}),
-      {reply,ok,[neuron,Weights,S_PId,A_PId]};
+      {reply,ok,[neuron,Weights]};
 
     stop ->
       io:format("~nneuron stopping~n"),
@@ -119,23 +110,23 @@ handle_call(R,F,[neuron,Weights,S_PId,A_PId]) ->
   end;
 
 
-handle_call(R,F,[actuator,N_PId]) ->
+handle_call(R,F,[actuator]) ->
   case R of
     stop ->
       io:format("~nactuator stopping~n"),
       {stop,stop,[]};
     _ ->
       io:format("~nIn actuator ~p ~n",[R]),
-      {reply,ok, [actuator,N_PId]}
+      {reply,ok, [actuator]}
   end;
 
 
-handle_call(R,F,[cortex,N_PId,S_PId,A_PId]) ->
+handle_call(R,F,[cortex]) ->
   io:format("~ncortex handle call~n "),
   case R of
     sense_think_act ->
-      gen_server:call(S_PId,sync),
-      {reply,ok,[cortex,N_PId,S_PId,A_PId]};
+      gen_server:call(sensor,sync),
+      {reply,ok,[cortex]};
     stop ->gen_server:stop(neuron),
            gen_server:stop(actuator),
            gen_server:stop(sensor),
@@ -144,7 +135,7 @@ handle_call(R,F,[cortex,N_PId,S_PId,A_PId]) ->
   end;
 
 
-handle_call(R,F,[sensor,N_PId]) ->
+handle_call(R,F,[sensor]) ->
   case R of
     stop ->
        io:format("~nsensor stopping~n"),
@@ -152,7 +143,7 @@ handle_call(R,F,[sensor,N_PId]) ->
 
     _ ->
      io:format("~nsensor handle call~n "),
-     {reply,ok,[sensor,N_PId]}
+     {reply,ok,[sensor]}
   end;
 
 handle_call(_Request, _From, State) ->
@@ -171,6 +162,14 @@ handle_call(_Request, _From, State) ->
   {noreply, NewState :: #state{}} |
   {noreply, NewState :: #state{}, timeout() | hibernate} |
   {stop, Reason :: term(), NewState :: #state{}}).
+handle_cast(Request, [sensor]) ->
+  case Request of
+    stop ->
+      {stop,stopped_by_message, [sensor]};
+    _->
+      io:format("ignoring")
+  end;
+
 handle_cast(_Request, State) ->
   {noreply, State}.
 
